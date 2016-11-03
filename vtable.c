@@ -6,6 +6,7 @@
 #include <string.h>
 #include "_cgo_export.h"
 
+
 typedef struct goVTab goVTab;
 
 struct goVTab {
@@ -106,8 +107,7 @@ static int cXClose(sqlite3_vtab_cursor *pCursor) {
 }
 
 static int cXFilter(sqlite3_vtab_cursor *pCursor, int idxNum, const char *idxStr, int argc, sqlite3_value **argv) {
-	// TODO idxNum, idxStr, argc, argv are useless when cXBestIndex is empty
-	char *pzErr = goVFilter(((goVTabCursor*)pCursor)->vTabCursor);
+	char *pzErr = goVFilter(((goVTabCursor*)pCursor)->vTabCursor, idxNum, (char*)idxStr, argc, argv);
 	if (pzErr) {
 		return setErrMsg(pCursor, pzErr);
 	}

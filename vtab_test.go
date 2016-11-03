@@ -9,6 +9,7 @@ import (
 	"database/sql"
 	"fmt"
 	"os"
+	"reflect"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -49,8 +50,15 @@ func (m testModule) Connect(c *SQLiteConn, args []string) (VTab, error) {
 
 func (m testModule) DestroyModule() {}
 
-func (v *testVTab) BestIndex(*IndexInfo) error {
-	return nil
+func (v *testVTab) BestIndex(cst []InfoConstraint, ob []InfoOrderBy) (*IndexResult, error) {
+	return &IndexResult{
+		Used:           []bool{},
+		IdxNum:         0,
+		IdxStr:         "test-index",
+		AlreadyOrdered: true,
+		EstimatedCost:  100,
+		EstimatedRows:  200,
+	}, nil
 }
 
 func (v *testVTab) Disconnect() error {
@@ -62,7 +70,6 @@ func (v *testVTab) Destroy() error {
 }
 
 func (v *testVTab) Open() (VTabCursor, error) {
-	//fmt.Printf("testVTab.Open: %v\n", v)
 	return &testVTabCursor{v, 0}, nil
 }
 
@@ -70,14 +77,12 @@ func (vc *testVTabCursor) Close() error {
 	return nil
 }
 
-func (vc *testVTabCursor) Filter( /*idxNum int, idxStr string, int argc, sqlite3_value **argv*/ ) error {
-	//fmt.Printf("testVTabCursor.Filter: %v\n", vc)
+func (vc *testVTabCursor) Filter(idxNum int, idxStr string, vals []reflect.Value) error {
 	vc.index = 0
 	return nil
 }
 
 func (vc *testVTabCursor) Next() error {
-	//fmt.Printf("testVTabCursor.Next: %v\n", vc)
 	vc.index++
 	return nil
 }
@@ -113,7 +118,7 @@ func TestCreateModule(t *testing.T) {
 	assert.Nil(t, err, "could not create vtable")
 
 	var i, value int
-	rows, err := db.Query("SELECT rowid, * FROM vtab")
+	rows, err := db.Query("SELECT rowid, * FROM vtab WHERE test = '3'")
 	assert.Nil(t, err, "couldn't select from virtual table")
 	for rows.Next() {
 		rows.Scan(&i, &value)

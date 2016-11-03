@@ -11,7 +11,7 @@ package sqlite3
 #cgo CFLAGS: -DSQLITE_TRACE_SIZE_LIMIT=15
 #cgo CFLAGS: -DSQLITE_ENABLE_COLUMN_METADATA=1
 #cgo CFLAGS: -Wno-deprecated-declarations -Wno-c99-extensions
-#include <sqlite3-binding.h>
+#include "sqlite3-binding.h"
 #include <stdlib.h>
 #include <string.h>
 #ifdef __CYGWIN__
@@ -36,6 +36,8 @@ static inline char *my_mprintf(char *zFormat, char *arg) {
 import "C"
 
 import (
+	"fmt"
+	"math"
 	"reflect"
 	"unsafe"
 )
@@ -54,6 +56,85 @@ type sqliteVTab struct {
 type sqliteVTabCursor struct {
 	vTab       *sqliteVTab
 	vTabCursor VTabCursor
+}
+
+type Op uint8
+
+const (
+	OpEQ       Op = 2
+	OpGT          = 4
+	OpLE          = 8
+	OpLT          = 16
+	OpGE          = 32
+	OpMATCH       = 64
+	OpLIKE        = 65 /* 3.10.0 and later only */
+	OpGLOB        = 66 /* 3.10.0 and later only */
+	OpREGEXP      = 67 /* 3.10.0 and later only */
+	ScanUnique    = 1  /* Scan visits at most 1 row */
+)
+
+type InfoConstraint struct {
+	Column int
+	Op     Op
+	Usable bool
+}
+
+type InfoOrderBy struct {
+	Column int
+	Desc   bool
+}
+
+func constraints(info *C.sqlite3_index_info) []InfoConstraint {
+	l := info.nConstraint
+	var constraints *C.struct_sqlite3_index_constraint = info.aConstraint
+	slice := (*[1 << 30]C.struct_sqlite3_index_constraint)(unsafe.Pointer(constraints))[:l:l]
+
+	cst := make([]InfoConstraint, 0, l)
+	for _, c := range slice {
+		var usable bool
+		if c.usable > 0 {
+			usable = true
+		}
+		cst = append(cst, InfoConstraint{
+			Column: int(c.iColumn),
+			Op:     Op(c.op),
+			Usable: usable,
+		})
+	}
+	return cst
+}
+
+func orderBys(info *C.sqlite3_index_info) []InfoOrderBy {
+	l := info.nOrderBy
+	var obys *C.struct_sqlite3_index_orderby = info.aOrderBy
+	slice := (*[1 << 30]C.struct_sqlite3_index_orderby)(unsafe.Pointer(obys))[:l:l]
+
+	ob := make([]InfoOrderBy, 0, l)
+	for _, c := range slice {
+		var desc bool
+		if c.desc > 0 {
+			desc = true
+		}
+		ob = append(ob, InfoOrderBy{
+			Column: int(c.iColumn),
+			Desc:   desc,
+		})
+	}
+	return ob
+}
+
+// IndexResult is a Go struct represetnation of what eventually ends up in the
+// output fields for `sqlite3_index_info`
+// See: https://www.sqlite.org/c3ref/index_info.html
+type IndexResult struct {
+	Used           []bool // aConstraintUsage
+	IdxNum         int
+	IdxStr         string
+	AlreadyOrdered bool // orderByConsumed
+	EstimatedCost  float64
+	EstimatedRows  float64
+	//IdxFlags []int
+	//ColsUsed []int
 }
 
 // Mprintf is like fmt.Printf but implements some additional formatting options
@@ -135,11 +216,36 @@ func goVOpen(pVTab unsafe.Pointer, pzErr **C.char) C.uintptr_t {
 //export goVBestIndex
 func goVBestIndex(pVTab unsafe.Pointer, icp unsafe.Pointer) *C.char {
 	vt := lookupHandle(uintptr(pVTab)).(*sqliteVTab)
-	i := (*IndexInfo)(icp)
-	err := vt.vTab.BestIndex(i)
+	info := (*C.sqlite3_index_info)(icp)
+	fmt.Printf("Constraints: %v, OrderBys: %v\n", constraints(info), orderBys(info))
+	res, err := vt.vTab.BestIndex(constraints(info), orderBys(info))
 	if err != nil {
 		return mPrintf("%s", err.Error())
 	}
+
+	// Get a pointer to constraint_usage struct so we can update in place.
+	l := info.nConstraint
+	var usg *C.struct_sqlite3_index_constraint_usage = info.aConstraintUsage
+	s := (*[1 << 30]C.struct_sqlite3_index_constraint_usage)(unsafe.Pointer(usg))[:l:l]
+	index := 1
+	for i := C.int(0); i < info.nConstraint; i++ {
+		s[i].argvIndex = C.int(index)
+		s[i].omit = C.uchar(1)
+		index++
+	}
+
+	info.idxNum = C.int(res.IdxNum)
+	idxStr := C.CString(res.IdxStr)
+	defer C.free(unsafe.Pointer(idxStr))
+	info.idxStr = idxStr
+	info.needToFreeIdxStr = C.int(0)
+	if res.AlreadyOrdered {
+		info.orderByConsumed = C.int(1)
+	}
+
+	info.estimatedCost = C.double(float64(10000000000))
+	info.estimatedRows = C.sqlite3_int64(int64(4000000000000))
+
 	return nil
 }
 
@@ -160,9 +266,18 @@ func goMDestroy(pClientData unsafe.Pointer) {
 }
 
 //export goVFilter
-func goVFilter(pCursor unsafe.Pointer) *C.char {
+func goVFilter(pCursor unsafe.Pointer, idxNum int, idxName *C.char, argc int, argv **C.sqlite3_value) *C.char {
 	vtc := lookupHandle(uintptr(pCursor)).(*sqliteVTabCursor)
-	err := vtc.vTabCursor.Filter()
+	args := (*[(math.MaxInt32 - 1) / unsafe.Sizeof((*C.sqlite3_value)(nil))]*C.sqlite3_value)(unsafe.Pointer(argv))[:argc:argc]
+	vals := make([]reflect.Value, 0, argc)
+	for _, v := range args {
+		conv, err := callbackArgGeneric(v)
+		if err != nil {
+			return mPrintf("%s", err.Error())
+		}
+		vals = append(vals, conv)
+	}
+	err := vtc.vTabCursor.Filter(idxNum, C.GoString(idxName), vals)
 	if err != nil {
 		return mPrintf("%s", err.Error())
 	}
@@ -222,10 +337,10 @@ type Module interface {
 // VTab describes a particular instance of the virtual table.
 // (See http://sqlite.org/c3ref/vtab.html)
 type VTab interface {
-	BestIndex(*IndexInfo) error // See http://sqlite.org/vtab.html#xbestindex
-	Disconnect() error          // See http://sqlite.org/vtab.html#xdisconnect
-	Destroy() error             // See http://sqlite.org/vtab.html#sqlite3_module.xDestroy
-	Open() (VTabCursor, error)  // See http://sqlite.org/vtab.html#xopen
+	BestIndex([]InfoConstraint, []InfoOrderBy) (*IndexResult, error) // See http://sqlite.org/vtab.html#xbestindex
+	Disconnect() error                                               // See http://sqlite.org/vtab.html#xdisconnect
+	Destroy() error                                                  // See http://sqlite.org/vtab.html#sqlite3_module.xDestroy
+	Open() (VTabCursor, error)                                       // See http://sqlite.org/vtab.html#xopen
 }
 
 // VTabExtended lists optional/extended functions.
@@ -250,10 +365,10 @@ type VTabExtended interface {
 // VTabCursor describes cursors that point into the virtual table and are used to loop through the virtual table.
 // (See http://sqlite.org/c3ref/vtab_cursor.html)
 type VTabCursor interface {
-	Close() error                                                                 // See http://sqlite.org/vtab.html#xclose
-	Filter( /*idxNum int, idxStr string, int argc, sqlite3_value **argv*/ ) error // See http://sqlite.org/vtab.html#xfilter
-	Next() error                                                                  // See http://sqlite.org/vtab.html#xnext
-	EOF() bool                                                                    // See http://sqlite.org/vtab.html#xeof
+	Close() error                                                 // See http://sqlite.org/vtab.html#xclose
+	Filter(idxNum int, idxStr string, vals []reflect.Value) error // See http://sqlite.org/vtab.html#xfilter
+	Next() error                                                  // See http://sqlite.org/vtab.html#xnext
+	EOF() bool                                                    // See http://sqlite.org/vtab.html#xeof
 	// col is zero-based so the first column is numbered 0
 	Column(c *Context, col int) error // See http://sqlite.org/vtab.html#xcolumn
 	Rowid() (int64, error)            // See http://sqlite.org/vtab.html#xrowid

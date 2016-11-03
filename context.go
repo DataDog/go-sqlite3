@@ -91,5 +91,3 @@ func (c *Context) ResultText(s string) {
 func (c *Context) ResultZeroblob(n ZeroBlobLength) {
 	C.sqlite3_result_zeroblob((*C.sqlite3_context)(c), C.int(n))
 }
-
-type IndexInfo C.sqlite3_index_info
