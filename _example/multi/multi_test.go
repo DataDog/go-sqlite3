@@ -43,7 +43,7 @@ func BenchmarkMultiWrite(b *testing.B) {
 	}()
 	var dsns []string
 	for _, path := range paths {
-		dsns = append(dsns, fmt.Sprintf("file:%s?busy_timeout=5", path))
+		dsns = append(dsns, fmt.Sprintf("file:%s?_busy_timeout=5", path))
 	}
 
 	var dbs []*sql.DB
