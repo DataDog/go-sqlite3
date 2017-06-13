@@ -70,7 +70,14 @@ func BenchmarkMultiWrite(b *testing.B) {
 	sort.Sort(sort.Reverse(sort.IntSlice(tds)))
 
 	if len(tds) > 3 && tds[0] > int(time.Millisecond*100) {
-		b.Log("slow bench, top 3:")
+		var sum int
+		for _, td := range tds {
+			sum += td
+		}
+		avg := time.Duration(sum / len(tds))
+		// not the real median but close enough
+		median := time.Duration(tds[len(tds)/2])
+		b.Logf("slow bench, top 3 (median: %s, avg: %s):", median, avg)
 		for _, td := range tds[:3] {
 			b.Logf(" %s", time.Duration(td))
 		}
