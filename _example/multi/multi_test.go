@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/rand"
 	"os"
+	"path"
 	"sort"
 	"strconv"
 	"sync"
@@ -35,7 +36,16 @@ func appendTo(sts []*sql.Stmt) {
 }
 
 func BenchmarkMultiWrite(b *testing.B) {
-	paths := []string{"/tmp/__sqb1.db", "/tmp/__sqb2.db", "/tmp/__sqb3.db"}
+	tmp := os.Getenv("TMP")
+	if len(tmp) == 0 {
+		tmp = "/tmp"
+	}
+	paths := []string{
+		path.Join(tmp, "__sqb1.db"),
+		path.Join(tmp, "__sqb2.db"),
+		path.Join(tmp, "__sqb3.db"),
+	}
+
 	defer func() {
 		for _, path := range paths {
 			os.Remove(path)
