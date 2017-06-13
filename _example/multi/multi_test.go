@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"fmt"
 	"math/rand"
 	"os"
 	"sort"
@@ -13,22 +14,22 @@ import (
 	_ "github.com/DataDog/go-sqlite3"
 )
 
-func appendTo(dbs []*sql.DB) {
-	append := func(db *sql.DB) {
+func appendTo(sts []*sql.Stmt) {
+	stappend := func(st *sql.Stmt) {
 		num := rand.Intn(25)
 		str := strconv.Itoa(rand.Intn(10))
-		_, err := db.Exec("INSERT OR REPLACE INTO test (a, b) VALUES (?, ?);", num, str)
+		_, err := st.Exec(num, str)
 		if err != nil {
 			panic(err)
 		}
 	}
 	var wg sync.WaitGroup
-	wg.Add(len(dbs))
-	for _, db := range dbs {
-		go func(db *sql.DB) {
-			append(db)
+	wg.Add(len(sts))
+	for _, st := range sts {
+		go func(st *sql.Stmt) {
+			stappend(st)
 			wg.Done()
-		}(db)
+		}(st)
 	}
 	wg.Wait()
 }
@@ -40,10 +41,14 @@ func BenchmarkMultiWrite(b *testing.B) {
 			os.Remove(path)
 		}
 	}()
+	var dsns []string
+	for _, path := range paths {
+		dsns = append(dsns, fmt.Sprintf("file:%s?busy_timeout=5", path))
+	}
 
 	var dbs []*sql.DB
-	for _, path := range paths {
-		db, err := sql.Open("sqlite3", path)
+	for _, dsn := range dsns {
+		db, err := sql.Open("sqlite3", dsn)
 		if err != nil {
 			b.Fatalf("error %s", err)
 		}
@@ -54,12 +59,21 @@ func BenchmarkMultiWrite(b *testing.B) {
 		dbs = append(dbs, db)
 	}
 
+	var stmts []*sql.Stmt
+	for _, db := range dbs {
+		stmt, err := db.Prepare("INSERT OR REPLACE INTO test (a, b) VALUES (?, ?);")
+		if err != nil {
+			b.Fatalf("prepare %s", err)
+		}
+		stmts = append(stmts, stmt)
+	}
+
 	b.ResetTimer()
 
 	var tds []int
 	t0 := time.Now()
 	for i := 0; i < b.N; i++ {
-		appendTo(dbs)
+		appendTo(stmts)
 		td := time.Since(t0)
 		tds = append(tds, int(td))
 		t0 = time.Now()
